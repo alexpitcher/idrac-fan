@@ -1,2 +1,10 @@
-# idrac-fan
-Dell IDRAC fan control automation. Works on versions up to 3.30.30.30.
+# iDRAC-Fan
+Dell iDRAC fan control automation. Works on versions up to 3.30.30.30.
+
+# Prerequisites
+- You must have ipmitool installed
+`sudo apt install ipmitool`
+`brew install ipmitool`
+- IPMI over LAN must be enabled (iDRAC -> iDRAC Settings -> Network)
+![[Pasted image 20240909160115.png]]
+- Your user must have permission to access IPMI, default `root` user has permission.
