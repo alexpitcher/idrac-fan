@@ -1,5 +1,5 @@
 # iDRAC-Fan
-Dell iDRAC fan control automation. Works on versions up to 3.30.30.30.
+Dell iDRAC fan control automation. Works on versions up to 3.30.30.30. Run this on your local mechine, ideally macOS or linux. Use WSL on Windows ideally.
 
 # Prerequisites
 - You must have ipmitool installed
