@@ -33,6 +33,8 @@ brew install ipmitool
 - **Input Validation**: It validates the IP address and fan speed inputs.
 - **Error Handling**: Provides clear error messages for issues such as incorrect credentials or IP address.
 - **IP Caching**: It caches the last used IP address for convenience, so you don't need to enter it every time.
+- **LibreNMS API Integration**: The script now interacts with the LibreNMS API to fetch core temperatures of the server using the provided device ID.
+- **Temperature-Based Fan Speed Suggestion**: If any core temperature exceeds 60 degrees Celsius, the script suggests increasing the fan speed.
 
 ## Quick Start
 
@@ -52,19 +54,20 @@ This command will fetch the script from GitHub and execute it directly on your s
 To run the script manually, use this command:
 
 `chmod +x ipmi_fan_control.sh`
-`/ipmi_fan_control.sh [--verbose] [IP_ADDRESS] [FAN_SPEED]`
+`/ipmi_fan_control.sh [--verbose] [DEVICE_ID] [IP_ADDRESS] [FAN_SPEED]`
 
 #### Arguments:
 
 - `--verbose` (optional): Enables verbose logging, outputting debug messages for troubleshooting.
+- `DEVICE_ID`: The device ID of the Proxmox server (Dell server where iDRAC is running). If not provided, you will be prompted for it.
 - `IP_ADDRESS`: The IP address of the iDRAC interface. If not provided, you will be prompted for it.
 - `FAN_SPEED`: The desired fan speed in percentage (0-100). If not provided, you will be prompted for it.
 
 Example:
 
-`./ipmi_fan_control.sh --verbose 192.168.1.100 75`
+`./ipmi_fan_control.sh --verbose 12345 192.168.1.100 75`
 
-This example runs the script in verbose mode, connects to `192.168.1.100`, and sets the fan speed to 75%.
+This example runs the script in verbose mode, fetches core temperatures from the LibreNMS API for device ID `12345`, connects to `192.168.1.100`, and sets the fan speed to 75%.
 
 ### `.env` File
 
@@ -75,6 +78,8 @@ The script uses a `.env` file to store the encoded credentials (username and pas
 ENCODED_USER=dXNlcjE=
 ENCODED_PASS=cGFzc3dvcmQxMjM=
 LAST_IP=192.168.1.100
+LIBRENMS_API_URL=https://librenms.example.com/api/v0
+LIBRENMS_API_TOKEN=your_api_token_here
 ```
 The credentials are stored in base64 encoded form to ensure they are not in plain text.
 
@@ -90,6 +95,9 @@ If the fan speed cannot be set, the script will provide additional details from 
 
 #### Example Output:
 ```[DEBUG] Starting script execution...
+[DEBUG] Fetching core temperatures from LibreNMS API...
+[DEBUG] Core temperatures: 55 62 58
+Warning: Some cores have temperatures exceeding 60 degrees Celsius. Consider increasing the fan speed.
 [DEBUG] Sending IPMI command to initialize fan control with verbose output...
 [DEBUG] Successfully initialized fan control.
 [DEBUG] Sending IPMI command to set fan speed with verbose output...
