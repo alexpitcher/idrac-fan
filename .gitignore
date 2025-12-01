@@ -180,3 +180,11 @@ cython_debug/
 # Add below lines to exclude OS settings and caches
 .trash/
 .DS_Store
+
+# Sensitive configuration files
+.env
+.env.*
+servers.json
+*.token
+*.key
+*.secret

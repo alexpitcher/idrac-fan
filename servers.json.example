@@ -1,0 +1,11 @@
+[
+  {
+    "name": "Server Name (e.g., 'Proxmox Host 1')",
+    "ip": "10.0.0.1",
+    "user": "base64_encoded_username",
+    "pass": "base64_encoded_password",
+    "lnms_url": "https://your-librenms.example.com/api/v0",
+    "lnms_token": "your_librenms_api_token",
+    "device_id": "device_id_number"
+  }
+]
