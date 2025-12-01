@@ -1,104 +1,103 @@
-# iDRAC-Fan
+# iDRAC Fan Control
 
-Dell iDRAC fan control automation. This script works on iDRAC versions up to 3.30.30.30. You can run this on your local machine, ideally macOS or Linux. If you're using Windows, it's recommended to use WSL (Windows Subsystem for Linux).
+A simple and flexible script for controlling Dell iDRAC fan speeds.
+
+This script allows you to manually set the fan speed on your Dell server using IPMI. It provides a user-friendly interactive setup for first-time use and powerful command-line options for automation and advanced use.
+
+Works on iDRAC versions up to 3.30.30.30. It can be run on macOS, Linux, or Windows (via WSL).
+
 ## Prerequisites
 
-Before running the script, ensure you meet the following requirements:
+1.  **`ipmitool`**: Must be installed on your system.
+    *   **Ubuntu/Debian**: `sudo apt install ipmitool`
+    *   **macOS (Homebrew)**: `brew install ipmitool`
+    *   **Other**: Check your package manager.
 
-1. **`ipmitool` must be installed**:
+2.  **IPMI over LAN**: Must be enabled in your iDRAC settings (`iDRAC Settings -> Network`).
 
-- On **Ubuntu/Debian**:
-```bash
+3.  **Required Dependencies for Temperature Monitoring**:
+    *   **`jq`**: For parsing temperature data. Install with `sudo apt install jq` or `brew install jq`.
+    *   **`bc`**: For floating-point number comparison. Install with `sudo apt install bc` or `brew install bc`.
 
-sudo apt install ipmitool
-
-```
-- On **macOS** (using Homebrew):
-```bash
-
-brew install ipmitool
-
-```
-
-2. **IPMI over LAN must be enabled** in the iDRAC settings:
-
-- Navigate to `iDRAC -> iDRAC Settings -> Network` and ensure IPMI over LAN is enabled.
-
-3. **User Permissions**:
-
-- Your user must have permission to access IPMI. The default `root` user typically has permission.
 ## Features
 
-- **Credentials Management**: The script securely stores and manages your iDRAC credentials in a `.env` file, encoded using base64.
-- **Input Validation**: It validates the IP address and fan speed inputs.
-- **Error Handling**: Provides clear error messages for issues such as incorrect credentials or IP address.
-- **IP Caching**: It caches the last used IP address for convenience, so you don't need to enter it every time.
+-   **Interactive First-Time Setup**: Guides you through configuring the script on the first run.
+-   **Secure Credential Storage**: Saves your credentials (base64 encoded) in a local `.env` file.
+-   **Command-Line Arguments**: Override settings for non-interactive use.
+-   **Optional LibreNMS Integration**: Fetches server temperatures and warns you if they are high (e.g., >60°C).
+-   **IP Caching**: Remembers the last used IP address for quick re-use.
+-   **Clear Error Handling**: Provides understandable error messages for common IPMI issues.
 
 ## Quick Start
 
-To quickly download and run the script, use the following one-liner:
+1.  **Download the script**:
+    ```bash
+    curl -O https://raw.githubusercontent.com/alexpitcher/idrac-fan/main/main.sh
+    # Or with wget:
+    # wget https://raw.githubusercontent.com/alexpitcher/idrac-fan/main/main.sh
+    ```
 
-`bash <(curl -s https://raw.githubusercontent.com/alexpitcher/idrac-fan/refs/heads/main/main.sh)
-`
-Alternatively, if you prefer using `wget`:
+2.  **Make it executable**:
+    ```bash
+    chmod +x main.sh
+    ```
 
-`bash <(wget -qO- https://raw.githubusercontent.com/alexpitcher/idrac-fan/refs/heads/main/main.sh)`
+3.  **Run it!**
+    ```bash
+    ./main.sh
+    ```
+    The first time you run it, it will guide you through the setup process.
 
-This command will fetch the script from GitHub and execute it directly on your system.
-## Script Usage
+## Usage
 
-### Running the Script
+### Interactive Mode
 
-To run the script manually, use this command:
+Simply run the script without any arguments:
 
-`chmod +x ipmi_fan_control.sh`
-`/ipmi_fan_control.sh [--verbose] [IP_ADDRESS] [FAN_SPEED]`
-
-#### Arguments:
-
-- `--verbose` (optional): Enables verbose logging, outputting debug messages for troubleshooting.
-- `IP_ADDRESS`: The IP address of the iDRAC interface. If not provided, you will be prompted for it.
-- `FAN_SPEED`: The desired fan speed in percentage (0-100). If not provided, you will be prompted for it.
-
-Example:
-
-`./ipmi_fan_control.sh --verbose 192.168.1.100 75`
-
-This example runs the script in verbose mode, connects to `192.168.1.100`, and sets the fan speed to 75%.
-
-### `.env` File
-
-The script uses a `.env` file to store the encoded credentials (username and password) and the last used IP address. This file is created if it doesn't exist, and you will be prompted to enter your credentials.
-
-#### Example `.env` File:
+```bash
+./main.sh
 ```
-ENCODED_USER=dXNlcjE=
-ENCODED_PASS=cGFzc3dvcmQxMjM=
+
+-   On the first run, it will prompt you for your iDRAC IP/credentials and optionally for LibreNMS details.
+-   On subsequent runs, it will ask if you want to reuse the last IP and then prompt you for the desired fan speed.
+
+### Non-Interactive (Command-Line) Mode
+
+You can override the stored configuration using command-line flags. This is ideal for scripts or automation.
+
+**Arguments:**
+
+-   `--ip <IP_ADDRESS>`: The IP address of the iDRAC interface.
+-   `--speed <PERCENTAGE>`: The desired fan speed (0-100).
+-   `--verbose`: Enables verbose logging for debugging.
+
+**Example:**
+
+```bash
+./main.sh --ip 192.168.1.100 --speed 20 --verbose
+```
+
+This command sets the fan speed to 20% on the iDRAC at `192.168.1.100` with debug output enabled.
+
+## Configuration File (`.env`)
+
+The script uses a `.env` file to store your configuration. It's created automatically during the initial setup.
+
+**Example `.env` file:**
+
+```
+ENCODED_USER=cm9vdA==
+ENCODED_PASS=cGFzc3dvcmQ=
 LAST_IP=192.168.1.100
+LIBRENMS_API_URL=https://librenms.example.com/api/v0
+LIBRENMS_API_TOKEN=your_api_token
+DEVICE_ID=12
 ```
-The credentials are stored in base64 encoded form to ensure they are not in plain text.
 
-### Error Handling
-
-The script checks for common error messages from `ipmitool`:
-
-- **Incorrect Username**: Authentication fails with the message `RAKP 2 message indicates an error : unauthorized name`.
-- **Incorrect Password**: Authentication fails with the message `RAKP 2 HMAC is invalid`.
-- **Incorrect IP Address**: The IP address may be unreachable, with the error message `Get Auth Capabilities error`.
-
-If the fan speed cannot be set, the script will provide additional details from the `ipmitool` output.
-
-#### Example Output:
-```[DEBUG] Starting script execution...
-[DEBUG] Sending IPMI command to initialize fan control with verbose output...
-[DEBUG] Successfully initialized fan control.
-[DEBUG] Sending IPMI command to set fan speed with verbose output...
-[ERROR] Authentication failed: Incorrect password.
-```
-### Debugging
-
-Enable verbose output by running the script with the `--verbose` flag. This will print debug messages to help you understand the script's execution and troubleshoot issues.
+-   `ENCODED_USER` / `ENCODED_PASS`: Your iDRAC credentials, encoded in base64.
+-   `LAST_IP`: The last IP address you successfully connected to.
+-   `LIBRENMS_API_URL` / `LIBRENMS_API_TOKEN` / `DEVICE_ID`: Optional settings for temperature monitoring. If these are blank, the feature will be skipped.
 
 ## License
 
-This script is provided under the MIT License. Feel free to modify and use it as needed.
+This project is licensed under the MIT License.
