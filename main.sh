@@ -90,6 +90,20 @@ select_server() {
 
 
 # --- Fan Control Logic ---
+spinner() {
+    local pid=$1
+    local delay=0.1
+    local spinstr='|/-\'
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+}
+
 control_fan_speed() {
     local server_details=$1
 
@@ -118,20 +132,23 @@ control_fan_speed() {
     local FAN_SPEED_HEX=$(printf '%x\n' $FAN_SPEED)
     log_debug "Setting fan speed to $FAN_SPEED% (0x$FAN_SPEED_HEX)"
 
-    log_debug "Sending command to enable manual fan control..."
-    local output_enable=$(ipmitool -I lanplus -H "$IP" -U "$USER" -P "$PASS" raw 0x30 0x30 0x01 0x00 2>&1)
-    if [ $? -ne 0 ]; then
-      echo "[ERROR] Failed to enable manual fan control. IPMItool output:"
-      echo "$output_enable"
-      return
-    fi
-    log_debug "Manual fan control enabled."
+    echo -n "Enabling manual fan control..."
+    (ipmitool -I lanplus -H "$IP" -U "$USER" -P "$PASS" raw 0x30 0x30 0x01 0x00 >/dev/null 2>&1) &
+    spinner $!
+    echo "Done."
 
-    log_debug "Sending command to set fan speed..."
+    echo -n "Setting fan speed to $FAN_SPEED%..."
+    (ipmitool -I lanplus -H "$IP" -U "$USER" -P "$PASS" raw 0x30 0x30 0x02 0xff 0x"$FAN_SPEED_HEX" >/dev/null 2>&1) &
+    spinner $!
+    echo "Done."
+    
     local output_set=$(ipmitool -I lanplus -H "$IP" -U "$USER" -P "$PASS" raw 0x30 0x30 0x02 0xff 0x"$FAN_SPEED_HEX" 2>&1)
-
     if [ $? -eq 0 ]; then
       echo "Successfully set fan speed to $FAN_SPEED% on $IP."
+      read -p "Would you like to monitor the temperatures in the terminal? (y/n): " monitor_choice
+      if [[ "$monitor_choice" == "y" || "$monitor_choice" == "Y" ]]; then
+        monitor_temperatures "$LIBRENMS_API_URL" "$LIBRENMS_API_TOKEN" "$DEVICE_ID"
+      fi
     else
       echo "[ERROR] Failed to set fan speed. Analyzing error..."
       if echo "$output_set" | grep -q "unauthorized name"; then
@@ -152,53 +169,130 @@ fetch_core_temperatures() {
   local api_url=$1
   local api_token=$2
   local device_id=$3
+  local silent_mode=$4
 
   if [ -z "$api_url" ] || [ -z "$api_token" ] || [ -z "$device_id" ] || [ "$api_url" == "null" ] || [ "$api_token" == "null" ] || [ "$device_id" == "null" ]; then
     log_debug "LibreNMS not fully configured for this server. Skipping temperature check."
     return
   fi
   
-  log_debug "Fetching list of temperature sensors from LibreNMS API..."
-  local sensors_response=$(curl -s -H "X-Auth-Token: $api_token" "$api_url/devices/$device_id/health/temperature")
+  if [ "$silent_mode" != "silent" ]; then
+    printf "Fetching temperatures from LibreNMS..."
+  fi
   
-  if [ $? -ne 0 ]; then
-      echo "[WARNING] Failed to fetch temperature sensor list from LibreNMS for device ID $device_id. Curl error."
-      return
-  fi
-
-  if ! echo "$sensors_response" | jq -e . >/dev/null 2>&1; then
-      echo "[WARNING] Received invalid JSON response when fetching sensor list for device ID $device_id. Response: $sensors_response"
-      return
-  fi
-
+  local sensors_response=$(curl -s -H "X-Auth-Token: $api_token" "$api_url/devices/$device_id/health/temperature")
   local sensor_ids=$(echo "$sensors_response" | jq -r '.graphs[].sensor_id')
   
-  if [ -z "$sensor_ids" ]; then
-      echo "[WARNING] No temperature sensors found for device ID $device_id."
-      return
-  fi
-
-  log_debug "Found sensor IDs: $sensor_ids"
-  
-  local core_temperatures=""
+  local temps=()
+  local descriptions=()
   for sensor_id in $sensor_ids; do
-    log_debug "Fetching temperature for sensor ID $sensor_id..."
     local temp_response=$(curl -s -H "X-Auth-Token: $api_token" "$api_url/devices/$device_id/health/device_temperature/$sensor_id")
     local temp=$(echo "$temp_response" | jq -r '.graphs[0].sensor_current')
+    local desc=$(echo "$temp_response" | jq -r '.graphs[0].sensor_descr')
     
     if [ -n "$temp" ] && [ "$temp" != "null" ]; then
-      core_temperatures="$core_temperatures $temp"
+      temps+=($temp)
+      descriptions+=($desc)
     fi
   done
+  
+  if [ ${#temps[@]} -eq 0 ]; then
+    if [ "$silent_mode" != "silent" ]; then
+      printf "\nNo temperature data found."
+    fi
+    return
+  fi
 
-  log_debug "Core temperatures: $core_temperatures"
-
-  for temp in $core_temperatures; do
+  local sum=0
+  local min=${temps[0]}
+  local max=${temps[0]}
+  local min_desc=${descriptions[0]}
+  local max_desc=${descriptions[0]}
+  local i=0
+  for temp in "${temps[@]}"; do
+    sum=$(($sum + $temp))
+    if (( $(echo "$temp < $min" | bc -l) )); then
+      min=$temp
+      min_desc=${descriptions[$i]}
+    fi
+    if (( $(echo "$temp > $max" | bc -l) )); then
+      max=$temp
+      max_desc=${descriptions[$i]}
+    fi
+    i=$(($i + 1))
+  done
+  
+  local avg=$(($sum / ${#temps[@]}))
+  
+  local summary="\nCore Temperatures: Avg: ${avg}°C | Max: ${max}°C (${max_desc}) | Min: ${min}°C (${min_desc})"
+  
+  for i in "${!temps[@]}"; do
+    local temp=${temps[$i]}
+    local desc=${descriptions[$i]}
+    if [ "$(echo "$temp > $avg + 5" | bc -l)" -eq 1 ]; then
+      summary+="\n[INFO] Outlier detected: $desc is at ${temp}°C (more than 5°C above average)."
+    fi
     if [ "$(echo "$temp > 60" | bc -l)" -eq 1 ]; then
-      echo "[WARNING] High Temperature Alert! A core temperature on device ID $device_id is above 60°C ($temp°C). Consider a higher fan speed."
-      break
+      summary+="\n[WARNING] High Temperature Alert! $desc is at ${temp}°C."
     fi
   done
+  
+  printf "%b" "$summary"
+}
+
+monitor_temperatures() {
+    local api_url=$1
+    local api_token=$2
+    local device_id=$3
+    local temp_history=()
+
+    echo "Starting temperature monitoring... Press any key to stop."
+    # Hide cursor
+    tput civis
+    # Clear the screen
+    clear
+    while true; do
+        # Move cursor to top left
+        tput cup 0 0
+        
+        local temp_info=$(fetch_core_temperatures "$api_url" "$api_token" "$device_id" "silent")
+        echo "--- Temperature Monitoring ---"
+        echo -e "$temp_info"
+        
+        local avg_temp=$(echo "$temp_info" | grep "Avg:" | awk '{print $4}' | cut -d'°' -f1)
+        if [ -n "$avg_temp" ]; then
+            temp_history+=($avg_temp)
+        fi
+        
+        draw_graph "${temp_history[@]}"
+        
+        echo -e "\nPress any key to stop monitoring."
+        
+        # Wait for 5 seconds, but exit if a key is pressed
+        for i in {1..5}; do
+            if read -t 1 -n 1; then
+                # Show cursor
+                tput cnorm
+                echo -e "\nMonitoring stopped."
+                return
+            fi
+        done
+    done
+}
+
+draw_graph() {
+    local history=("$@")
+    local max_width=50
+    
+    echo -e "\n--- Temperature Trend ---"
+    for temp in "${history[@]}"; do
+        local width=$(( ($temp * $max_width) / 100 ))
+        printf "[ %3d°C ] " "$temp"
+        for i in $(seq 1 $width); do
+            printf "#"
+        done
+        echo ""
+    done
 }
 
 # --- Main Menu ---
@@ -214,11 +308,10 @@ main_menu() {
       1) select_server ;;
       2) add_server ;;
       3) exit 0 ;;
-      *) echo "Invalid option. Please try again." ;; 
+      *) echo "Invalid option. Please try again." ;;
     esac
   done
 }
-
 # --- Script Entry Point ---
 # Initialize config file if it doesn't exist
 initialize_config_file
