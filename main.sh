@@ -4,11 +4,30 @@
 VERBOSE=false
 CONFIG_FILE="servers.json"
 
+# --- Colors ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+dGRAY='\033[1;30m'
+NC='\033[0m' # No Color
+
 # --- Logging ---
 log_debug() {
   if [ "$VERBOSE" = true ]; then
-    echo "[DEBUG] $1"
+    echo -e "${dGRAY}[DEBUG] $1${NC}"
   fi
+}
+
+log_error() {
+    echo -e "${RED}[ERROR] $1${NC}"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS] $1${NC}"
+}
+
+log_warning() {
+    echo -e "${YELLOW}[WARNING] $1${NC}"
 }
 
 # --- Configuration Management ---
@@ -20,14 +39,53 @@ initialize_config_file() {
 }
 
 # --- Server Management ---
+# --- Server Management ---
+validate_ip() {
+    local ip=$1
+    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+test_connection() {
+    local ip=$1
+    local user=$2
+    local pass=$3
+    
+    echo -e "${YELLOW}Testing connection to $ip...${NC}"
+    if ipmitool -I lanplus -H "$ip" -U "$user" -P "$pass" raw 0x06 0x01 >/dev/null 2>&1; then
+        log_success "Connection successful!"
+        return 0
+    else
+        log_error "Connection failed. Please check IP and credentials."
+        return 1
+    fi
+}
+
 add_server() {
-  echo "--- Add New Server ---"
+  echo -e "\n--- ${GREEN}Add New Server${NC} ---"
   
   read -p "Enter a friendly name for this server (e.g., 'Proxmox Host 1'): " server_name
-  read -p "Enter iDRAC IP Address: " ip
-  read -p "Enter iDRAC Username: " user
+  
+  while true; do
+      read -p "Enter iDRAC IP Address: " ip
+      if validate_ip "$ip"; then
+          break
+      else
+          log_error "Invalid IP address format."
+      fi
+  done
+
+  read -p "Enter iDRAC Username [root]: " user
+  user=${user:-root}
+  
   read -s -p "Enter iDRAC Password: " pass
   echo ""
+  
+  # Test connection immediately
+  test_connection "$ip" "$user" "$pass"
   
   read -p "Do you want to configure optional LibreNMS integration? (y/n): " lnms_choice
   local lnms_url=""
@@ -57,34 +115,181 @@ add_server() {
   local updated_servers=$(jq ". += [$new_server]" "$CONFIG_FILE")
   echo "$updated_servers" > "$CONFIG_FILE"
   
-  echo "Server '$server_name' added successfully."
-  read -p "Press Enter to return to the main menu."
+  log_success "Server '$server_name' added successfully."
+  read -p "Press Enter to return to the menu."
+}
+
+edit_server() {
+  local server_count=$(jq '. | length' "$CONFIG_FILE")
+
+  if [ "$server_count" -eq 0 ]; then
+    log_warning "No servers found to edit."
+    read -p "Press Enter to return."
+    return
+  fi
+
+  # Generate display list "Name (IP)"
+  local options=$(jq -r '.[] | "\(.name) (\(.ip))"' "$CONFIG_FILE")
+  
+  echo -e "\n--- ${YELLOW}Edit Server${NC} ---"
+  PS3="Select server to edit: "
+  select option in $options "Cancel"; do
+    if [[ "$REPLY" -eq $(($server_count + 1)) ]]; then
+        break
+    elif [ "$REPLY" -gt 0 ] && [ "$REPLY" -le "$server_count" ]; then
+      local index=$(($REPLY - 1))
+      # Use index to get details
+      local server_details=$(jq -c ".[$index]" "$CONFIG_FILE")
+      local server_name=$(echo "$server_details" | jq -r '.name')
+      
+      local cur_ip=$(echo "$server_details" | jq -r '.ip')
+      local cur_user=$(echo "$server_details" | jq -r '.user' | base64 -d)
+      ## Decode password? No, keep it hidden or leave blank to keep unchanged
+      
+      echo -e "\nEditing '${server_name}' (Press Enter to keep current value)"
+      
+      # Name
+      read -p "Name [$server_name]: " new_name
+      new_name=${new_name:-$server_name}
+      
+      # IP
+      local new_ip
+      while true; do
+          read -p "IP Address [$cur_ip]: " input_ip
+          if [ -z "$input_ip" ]; then
+              new_ip=$cur_ip
+              break
+          elif validate_ip "$input_ip"; then
+              new_ip=$input_ip
+              break
+          else
+              log_error "Invalid IP address format."
+          fi
+      done
+      
+      # User
+      read -p "Username [$cur_user]: " new_user
+      new_user=${new_user:-$cur_user}
+      
+      # Password
+      read -s -p "Password [Unchanged]: " new_pass
+      echo ""
+      
+      local encoded_user=$(echo -n "$new_user" | base64)
+      local encoded_pass
+      if [ -n "$new_pass" ]; then
+         encoded_pass=$(echo -n "$new_pass" | base64)
+      else
+         encoded_pass=$(echo "$server_details" | jq -r '.pass')
+      fi
+      
+      local updated_servers=$(jq ".[$index].name = \"$new_name\" | .[$index].ip = \"$new_ip\" | .[$index].user = \"$encoded_user\" | .[$index].pass = \"$encoded_pass\"" "$CONFIG_FILE")
+      echo "$updated_servers" > "$CONFIG_FILE"
+      
+      log_success "Server updated successfully."
+            
+      # Test connection
+      read -p "Test connection now? (y/n): " test_choice
+      if [[ "$test_choice" == "y" || "$test_choice" == "Y" ]]; then
+          if [ -n "$new_pass" ]; then pass_to_test=$new_pass; else pass_to_test=$(echo "$server_details" | jq -r '.pass' | base64 -d); fi
+          test_connection "$new_ip" "$new_user" "$pass_to_test"
+      fi
+
+      break
+    else
+      log_error "Invalid selection."
+    fi
+  done
+  PS3="#? "
+}
+
+delete_server() {
+  local server_count=$(jq '. | length' "$CONFIG_FILE")
+
+  if [ "$server_count" -eq 0 ]; then
+    log_warning "No servers found to delete."
+    read -p "Press Enter to return."
+    return
+  fi
+
+  # Generate display list "Name (IP)"
+  local options=$(jq -r '.[] | "\(.name) (\(.ip))"' "$CONFIG_FILE")
+  
+  echo -e "\n--- ${RED}Delete Server${NC} ---"
+  PS3="Select server to delete: "
+  select option in $options "Cancel"; do
+    if [[ "$REPLY" -eq $(($server_count + 1)) ]]; then
+        break
+    elif [ "$REPLY" -gt 0 ] && [ "$REPLY" -le "$server_count" ]; then
+      local index=$(($REPLY - 1))
+      local server_name=$(jq -r ".[$index].name" "$CONFIG_FILE")
+      
+      read -p "Are you sure you want to delete '$server_name'? (y/n): " confirm
+      if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+          local updated_servers=$(jq "del(.[$index])" "$CONFIG_FILE")
+          echo "$updated_servers" > "$CONFIG_FILE"
+          log_success "Server '$server_name' deleted."
+      else
+          echo "Deletion cancelled."
+      fi
+      break
+    else
+      log_error "Invalid selection."
+    fi
+  done
+  PS3="#? " 
+}
+
+manage_servers() {
+    while true; do
+        echo -e "\n--- ${YELLOW}Manage Servers${NC} ---"
+        echo "1. Add New Server"
+        echo "2. Edit Server"
+        echo "3. Delete Server"
+        echo "4. Back to Main Menu"
+        read -p "Choose an option: " choice
+        
+        case $choice in
+            1) add_server ;;
+            2) edit_server ;;
+            3) delete_server ;;
+            4) return ;;
+            *) log_error "Invalid option." ;;
+        esac
+    done
 }
 
 select_server() {
   local server_count=$(jq '. | length' "$CONFIG_FILE")
 
   if [ "$server_count" -eq 0 ]; then
-    echo "No servers found. Please add a server first."
+    log_warning "No servers found. Please add a server first."
     read -p "Press Enter to return to the main menu."
     return
   fi
 
-  local servers=$(jq -r '.[].name' "$CONFIG_FILE")
+  # Generate display list "Name (IP)"
+  # jq -r outputs lines, select expects space separated unless IFS is set. 
+  # We should use IFS=$'\n' to handle spaces in names properly, though simple names are fine.
+  old_IFS=$IFS
+  IFS=$'\n'
+  local options=$(jq -r '.[] | "\(.name) (\(.ip))"' "$CONFIG_FILE")
   
-  echo "--- Select a Server ---"
+  echo -e "\n--- ${GREEN}Select a Server${NC} ---"
   PS3="Please enter your choice: "
-  select server_name in $servers "Back to Main Menu"; do
+  select option in $options "Back to Main Menu"; do
     if [[ "$REPLY" -eq $(($server_count + 1)) ]]; then
         break
-    elif [ -n "$server_name" ]; then
-      local server_details=$(jq -c ".[] | select(.name==\"$server_name\")" "$CONFIG_FILE")
+    elif [ "$REPLY" -gt 0 ] && [ "$REPLY" -le "$server_count" ]; then
+      local index=$(($REPLY - 1))
+      local server_details=$(jq -c ".[$index]" "$CONFIG_FILE")
       control_fan_speed "$server_details"
       break
     else
-      echo "Invalid selection. Please try again."
+      log_error "Invalid selection. Please try again."
     fi
   done
+  IFS=$old_IFS
   PS3="#? "
 }
 
@@ -112,22 +317,22 @@ execute_ipmi_command() {
     local exit_code=$?
     
     if [ $exit_code -eq 0 ]; then
-        echo "Done."
+        echo -e "${GREEN}Done.${NC}"
         rm "$temp_out"
         return 0
     else
-        echo "Failed."
-        echo "[ERROR] Command failed with exit code $exit_code."
+        echo -e "${RED}Failed.${NC}"
+        log_error "Command failed with exit code $exit_code."
         echo "Output:"
         cat "$temp_out"
         
         # Analyze error output for common issues
         if grep -q "unauthorized name" "$temp_out"; then
-            echo "[ERROR] Authentication failed: Incorrect username."
+            log_error "Authentication failed: Incorrect username."
         elif grep -q "RAKP 2 HMAC is invalid" "$temp_out"; then
-            echo "[ERROR] Authentication failed: Incorrect password."
+            log_error "Authentication failed: Incorrect password."
         elif grep -q "Get Auth Capabilities error" "$temp_out"; then
-            echo "[ERROR] Connection failed: Incorrect IP address or IPMI not enabled."
+            log_error "Connection failed: Incorrect IP address or IPMI not enabled."
         fi
         
         rm "$temp_out"
@@ -156,17 +361,36 @@ control_fan_speed() {
     local IP=$(echo "$server_details" | jq -r '.ip')
     local USER=$(echo "$server_details" | jq -r '.user' | base64 -d)
     local PASS=$(echo "$server_details" | jq -r '.pass' | base64 -d)
-    local LIBRENMS_API_URL=$(echo "$server_details" | jq -r '.lnms_url')
-    local LIBRENMS_API_TOKEN=$(echo "$server_details" | jq -r '.lnms_token')
-    local DEVICE_ID=$(echo "$server_details" | jq -r '.device_id')
 
-    echo "--- Controlling Fans for: $(echo "$server_details" | jq -r '.name') ---"
+    echo -e "\n--- Controlling Fans for: ${GREEN}$(echo "$server_details" | jq -r '.name')${NC} ---"
 
-    read -p "Enter desired fan speed (0-100): " FAN_SPEED
+    # Attempt to get current status (optional, don't fail if this fails details)
+    echo -n "Getting current status..."
+    local status_output=$(ipmitool -I lanplus -H "$IP" -U "$USER" -P "$PASS" sdr type fan 2>/dev/null)
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Done.${NC}"
+        echo -e "${dGRAY}$status_output${NC}"
+    else
+        echo -e "${YELLOW}Skipped (Could not retrieve status)${NC}"
+    fi
+
+    echo -e "Enter desired fan speed (0-100) or '${YELLOW}auto${NC}' to reset to automatic control."
+    read -p "Fan Speed: " FAN_SPEED
+
+    # Handle Auto Mode
+    if [[ "$FAN_SPEED" == "auto" || "$FAN_SPEED" == "-1" ]]; then
+        log_debug "Resetting to automatic fan control."
+        if execute_ipmi_command "Resetting to Automatic Control" ipmitool -I lanplus -H "$IP" -U "$USER" -P "$PASS" raw 0x30 0x30 0x01 0x01; then
+            log_success "Fan control reset to automatic."
+        else
+            log_error "Failed to reset fan control."
+        fi
+        return
+    fi
 
     # Validate Fan Speed
     if ! [[ $FAN_SPEED =~ ^[0-9]+$ ]] || [ $FAN_SPEED -lt 0 ] || [ $FAN_SPEED -gt 100 ]; then
-      echo "[ERROR] Invalid fan speed. Must be between 0 and 100."
+      log_error "Invalid fan speed. Must be between 0 and 100."
       return
     fi
 
@@ -181,26 +405,27 @@ control_fan_speed() {
 
     # Set fan speed
     if execute_ipmi_command "Setting fan speed to $FAN_SPEED%" ipmitool -I lanplus -H "$IP" -U "$USER" -P "$PASS" raw 0x30 0x30 0x02 0xff 0x"$FAN_SPEED_HEX"; then
-       echo "Successfully set fan speed to $FAN_SPEED% on $IP."
+       log_success "Successfully set fan speed to $FAN_SPEED% on $IP."
     else
-       echo "[ERROR] Failed to set fan speed."
+       log_error "Failed to set fan speed."
     fi
 }
 
 # --- Main Menu ---
+# --- Main Menu ---
 main_menu() {
   while true; do
-    echo "--- iDRAC Fan Control ---"
+    echo -e "\n--- ${GREEN}iDRAC Fan Control${NC} ---"
     echo "1. Select Server"
-    echo "2. Add New Server"
+    echo "2. Manage Servers"
     echo "3. Exit"
     read -p "Choose an option: " choice
     
     case $choice in
       1) select_server ;;
-      2) add_server ;;
+      2) manage_servers ;;
       3) exit 0 ;;
-      *) echo "Invalid option. Please try again." ;;
+      *) log_error "Invalid option. Please try again." ;;
     esac
   done
 }
