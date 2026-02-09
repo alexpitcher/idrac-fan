@@ -90,6 +90,51 @@ select_server() {
 
 
 # --- Fan Control Logic ---
+# --- Helper Functions ---
+execute_ipmi_command() {
+    local description=$1
+    shift
+    local cmd=("$@")
+    
+    echo -n "$description..."
+    
+    local temp_out=$(mktemp)
+    
+    # Run the command in the background, redirecting output
+    "${cmd[@]}" > "$temp_out" 2>&1 &
+    local pid=$!
+    
+    # Run the spinner
+    spinner $pid
+    
+    # Wait for the command to finish and get exit code
+    wait $pid
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
+        echo "Done."
+        rm "$temp_out"
+        return 0
+    else
+        echo "Failed."
+        echo "[ERROR] Command failed with exit code $exit_code."
+        echo "Output:"
+        cat "$temp_out"
+        
+        # Analyze error output for common issues
+        if grep -q "unauthorized name" "$temp_out"; then
+            echo "[ERROR] Authentication failed: Incorrect username."
+        elif grep -q "RAKP 2 HMAC is invalid" "$temp_out"; then
+            echo "[ERROR] Authentication failed: Incorrect password."
+        elif grep -q "Get Auth Capabilities error" "$temp_out"; then
+            echo "[ERROR] Connection failed: Incorrect IP address or IPMI not enabled."
+        fi
+        
+        rm "$temp_out"
+        return $exit_code
+    fi
+}
+
 spinner() {
     local pid=$1
     local delay=0.1
@@ -129,31 +174,16 @@ control_fan_speed() {
     local FAN_SPEED_HEX=$(printf '%x\n' $FAN_SPEED)
     log_debug "Setting fan speed to $FAN_SPEED% (0x$FAN_SPEED_HEX)"
 
-    echo -n "Enabling manual fan control..."
-    (ipmitool -I lanplus -H "$IP" -U "$USER" -P "$PASS" raw 0x30 0x30 0x01 0x00 >/dev/null 2>&1) &
-    spinner $!
-    echo "Done."
+    # Enable manual fan control
+    if ! execute_ipmi_command "Enabling manual fan control" ipmitool -I lanplus -H "$IP" -U "$USER" -P "$PASS" raw 0x30 0x30 0x01 0x00; then
+        return
+    fi
 
-    echo -n "Setting fan speed to $FAN_SPEED%..."
-    (ipmitool -I lanplus -H "$IP" -U "$USER" -P "$PASS" raw 0x30 0x30 0x02 0xff 0x"$FAN_SPEED_HEX" >/dev/null 2>&1) &
-    spinner $!
-    echo "Done."
-    
-    local output_set=$(ipmitool -I lanplus -H "$IP" -U "$USER" -P "$PASS" raw 0x30 0x30 0x02 0xff 0x"$FAN_SPEED_HEX" 2>&1)
-    if [ $? -eq 0 ]; then
-      echo "Successfully set fan speed to $FAN_SPEED% on $IP."
+    # Set fan speed
+    if execute_ipmi_command "Setting fan speed to $FAN_SPEED%" ipmitool -I lanplus -H "$IP" -U "$USER" -P "$PASS" raw 0x30 0x30 0x02 0xff 0x"$FAN_SPEED_HEX"; then
+       echo "Successfully set fan speed to $FAN_SPEED% on $IP."
     else
-      echo "[ERROR] Failed to set fan speed. Analyzing error..."
-      if echo "$output_set" | grep -q "unauthorized name"; then
-        echo "[ERROR] Authentication failed: Incorrect username."
-      elif echo "$output_set" | grep -q "RAKP 2 HMAC is invalid"; then
-        echo "[ERROR] Authentication failed: Incorrect password."
-      elif echo "$output_set" | grep -q "Get Auth Capabilities error"; then
-        echo "[ERROR] Connection failed: Incorrect IP address or IPMI not enabled."
-      else
-        echo "[ERROR] An unknown error occurred. IPMItool output:"
-        echo "$output_set"
-      fi
+       echo "[ERROR] Failed to set fan speed."
     fi
 }
 
@@ -193,4 +223,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Start the main menu
-main_menu
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main_menu
+fi
