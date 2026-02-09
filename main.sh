@@ -429,9 +429,51 @@ main_menu() {
     esac
   done
 }
+# --- startup checks ---
+check_dependencies() {
+    local dependencies=("ipmitool" "jq")
+    local missing=false
+
+    for cmd in "${dependencies[@]}"; do
+        if ! command -v "$cmd" &> /dev/null; then
+            log_error "Dependency missing: $cmd is not installed."
+            missing=true
+        fi
+    done
+
+    if [ "$missing" = true ]; then
+        log_error "Please install missing dependencies and try again."
+        exit 1
+    fi
+}
+
+validate_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        if ! jq empty "$CONFIG_FILE" > /dev/null 2>&1; then
+            log_error "Config file '$CONFIG_FILE' contains invalid JSON."
+            read -p "Backup and reset config file? (y/n): " choice
+            if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
+                mv "$CONFIG_FILE" "${CONFIG_FILE}.bak"
+                log_warning "Backed up to ${CONFIG_FILE}.bak"
+                echo "[]" > "$CONFIG_FILE"
+                log_success "Created new empty config file."
+            else
+                log_error "Cannot proceed with invalid config."
+                exit 1
+            fi
+        fi
+    fi
+}
+
 # --- Script Entry Point ---
+# Check dependencies first
+check_dependencies
+
 # Initialize config file if it doesn't exist
 initialize_config_file
+
+# Validate config format
+validate_config
 
 # Parse command-line arguments for verbosity
 while [[ $# -gt 0 ]]; do
